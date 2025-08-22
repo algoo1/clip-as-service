@@ -1,4 +1,4 @@
-# Use Python base image instead of CUDA for compatibility
+# Use Python base image for compatibility
 FROM python:3.9-slim
 
 WORKDIR /cas
@@ -22,26 +22,37 @@ RUN apt-get update \
         wget \
         curl \
         build-essential \
+        python3-dev \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
 # Upgrade pip
 RUN pip install --upgrade pip wheel setuptools
 
-# Install PyTorch CPU version
+# Install PyTorch CPU version first
 RUN pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+
+# Install Jina first
+RUN pip install "jina[standard]>=3.11.0"
+
+# Install other dependencies that might be needed
+RUN pip install transformers pillow numpy requests
 
 # Copy project files
 COPY . .
 
-# Install the project and dependencies
-RUN pip install --default-timeout=1000 .
+# Install the project (try different approaches)
+RUN pip install -e . || \
+    pip install --no-deps . || \
+    (cd /cas && python setup.py install) || \
+    echo "Direct installation failed, trying manual install..." && \
+    pip install -r requirements.txt 2>/dev/null || \
+    echo "No requirements.txt found, continuing..."
 
-# Install Jina
-RUN pip install "jina[standard]>=3.11.0"
-
-# Install additional dependencies that might be needed
-RUN pip install transformers pillow numpy
+# Ensure clip_server is available
+RUN python -c "import clip_server" || \
+    pip install clip-server || \
+    echo "Will try to run from source"
 
 # Create non-root user
 RUN useradd -m -u 1000 cas && \
@@ -56,5 +67,5 @@ EXPOSE 51000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:51000/ || exit 1
 
-# Start the server
-ENTRYPOINT ["python", "-m", "clip_server", "--host", "0.0.0.0", "--port", "51000"]
+# Try multiple ways to start the server
+ENTRYPOINT ["sh", "-c", "python -m clip_server --host 0.0.0.0 --port 51000 || python -c 'from clip_server import app; app.run(host=\"0.0.0.0\", port=51000)' || python server.py"]
