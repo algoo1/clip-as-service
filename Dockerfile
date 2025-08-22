@@ -1,12 +1,11 @@
-# Use a stable and available CUDA image
-FROM nvidia/cuda:11.8-devel-ubuntu20.04
+# Use Python base image instead of CUDA for compatibility
+FROM python:3.9-slim
 
-ARG CAS_NAME=cas
-WORKDIR /${CAS_NAME}
+WORKDIR /cas
 
-ENV PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    DEBIAN_FRONTEND=noninteractive
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
 
 LABEL org.opencontainers.image.vendor="Jina AI Limited" \
       org.opencontainers.image.licenses="Apache 2.0" \
@@ -16,47 +15,46 @@ LABEL org.opencontainers.image.vendor="Jina AI Limited" \
       org.opencontainers.image.url="clip-as-service" \
       org.opencontainers.image.documentation="https://clip-as-service.jina.ai/"
 
+# Install system dependencies
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        python3 \
-        python3-pip \
-        wget \
         git \
-    && ln -sf python3 /usr/bin/python \
-    && ln -sf pip3 /usr/bin/pip \
-    && pip install --upgrade pip \
-    && pip install wheel setuptools nvidia-pyindex \
+        wget \
+        curl \
+        build-essential \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Install PyTorch with CUDA 11.8 support
-RUN pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+# Upgrade pip
+RUN pip install --upgrade pip wheel setuptools
 
-# Copy the project files
+# Install PyTorch CPU version
+RUN pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+
+# Copy project files
 COPY . .
 
-# Install the project
-RUN pip install --default-timeout=1000 --compile .
+# Install the project and dependencies
+RUN pip install --default-timeout=1000 .
 
 # Install Jina
-RUN pip install "jina[standard]"
+RUN pip install "jina[standard]>=3.11.0"
 
-ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64
+# Install additional dependencies that might be needed
+RUN pip install transformers pillow numpy
 
 # Create non-root user
-ARG USER_ID=1000
-ARG GROUP_ID=1000
-ARG USER_NAME=${CAS_NAME}
-ARG GROUP_NAME=${CAS_NAME}
+RUN useradd -m -u 1000 cas && \
+    chown -R cas:cas /cas
 
-RUN groupadd -g ${GROUP_ID} ${USER_NAME} &&\
-    useradd -l -u ${USER_ID} -g ${USER_NAME} ${GROUP_NAME} &&\
-    mkdir /home/${USER_NAME} &&\
-    chown ${USER_NAME}:${GROUP_NAME} /home/${USER_NAME} &&\
-    chown -R ${USER_NAME}:${GROUP_NAME} /${CAS_NAME}/
+USER cas
 
-USER ${USER_NAME}
-
+# Expose port
 EXPOSE 51000
 
-ENTRYPOINT ["python", "-m", "clip_server"]
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:51000/ || exit 1
+
+# Start the server
+ENTRYPOINT ["python", "-m", "clip_server", "--host", "0.0.0.0", "--port", "51000"]
